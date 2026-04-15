@@ -1117,13 +1117,13 @@ int64_t DBImpl::TEST_MaxNextLevelOverlappingBytes() {
   MutexLock l(&mutex_);
   return versions_->MaxNextLevelOverlappingBytes();
 }
-Status DBImpl::Scan(const ReadOptions& options,const Slice& start,const Slice& end, std::vector<std::pair<std::string, std::string>>* result) {
+Status DBImpl::Scan(const ReadOptions& options,const Slice& start_key,const Slice& end_key, std::vector<std::pair<std::string, std::string>>* result) {
 
     Iterator* it = NewIterator(options);
-    for (it->Seek(start); it->Valid(); it->Next()) {
+    for (it->Seek(start_key); it->Valid(); it->Next()) {
 
         Slice key = it->key();
-        if (key.compare(end) >= 0) break;
+        if (key.compare(end_key) >= 0) break;
         Slice value = it->value();
         result->push_back({key.ToString(), value.ToString()});
     }
@@ -1131,21 +1131,20 @@ Status DBImpl::Scan(const ReadOptions& options,const Slice& start,const Slice& e
     delete it;
     return Status::OK();
 }
-Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start,
-                           const Slice& end) {
-
+Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,const Slice& end_key) {
+  std::vector<std::string> keys;
   Iterator* it = NewIterator(ReadOptions());
 
-  for (it->Seek(start); it->Valid(); it->Next()) {
+  for (it->Seek(start_key); it->Valid(); it->Next()) {
     Slice key = it->key();
 
-    if (key.compare(end) >= 0) break;
-
-    // delete each key
-    Delete(options, key);
+    if (key.compare(end_key) >= 0) break;
+    keys.push_back(key.ToString());
   }
-
   delete it;
+  for (const auto& key : keys) {
+    Delete(options, Slice(key));
+  }
   return Status::OK();
 }
 Status DBImpl::Get(const ReadOptions& options, const Slice& key, std::string* value) {
