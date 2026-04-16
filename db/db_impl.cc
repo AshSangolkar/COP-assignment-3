@@ -147,7 +147,8 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
       background_compaction_scheduled_(false),
       manual_compaction_(nullptr),
       versions_(new VersionSet(dbname_, &options_, table_cache_,
-                               &internal_comparator_)) {}
+                               &internal_comparator_)),
+      force_compaction_stats_(nullptr) {}
 
 DBImpl::~DBImpl() {
   // Wait for background work to finish.
@@ -1045,6 +1046,16 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   mutex_.Lock();
   stats_[compact->compaction->level() + 1].Add(stats);
 
+  if (force_compaction_stats_ != nullptr) {
+    force_compaction_stats_->num_compactions++;
+    force_compaction_stats_->num_input_files +=
+        compact->compaction->num_input_files(0) +
+        compact->compaction->num_input_files(1);
+    force_compaction_stats_->num_output_files += compact->outputs.size();
+    force_compaction_stats_->bytes_read += stats.bytes_read;
+    force_compaction_stats_->bytes_written += stats.bytes_written;
+  }
+
   if (status.ok()) {
     status = InstallCompactionResults(compact);
   }
@@ -1117,35 +1128,72 @@ int64_t DBImpl::TEST_MaxNextLevelOverlappingBytes() {
   MutexLock l(&mutex_);
   return versions_->MaxNextLevelOverlappingBytes();
 }
-Status DBImpl::Scan(const ReadOptions& options,const Slice& start_key,const Slice& end_key, std::vector<std::pair<std::string, std::string>>* result) {
+Status DBImpl::Scan(const ReadOptions& options, const Slice& start_key,
+                   const Slice& end_key,
+                   std::vector<std::pair<std::string, std::string>>* result) {
+  Iterator* it = NewIterator(options);
+  for (it->Seek(start_key); it->Valid(); it->Next()) {
+    Slice key = it->key();
+    if (key.compare(end_key) >= 0) break;
+    result->push_back({key.ToString(), it->value().ToString()});
+  }
 
-    Iterator* it = NewIterator(options);
-    for (it->Seek(start_key); it->Valid(); it->Next()) {
-
-        Slice key = it->key();
-        if (key.compare(end_key) >= 0) break;
-        Slice value = it->value();
-        result->push_back({key.ToString(), value.ToString()});
-    }
-
-    delete it;
-    return Status::OK();
+  Status s = it->status();
+  delete it;
+  return s;
 }
-Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,const Slice& end_key) {
-  std::vector<std::string> keys;
+Status DBImpl::ForceFullCompaction() {
+  ForceCompactionStats stats;
+  {
+    MutexLock l(&mutex_);
+    force_compaction_stats_ = &stats;
+  }
+
+  Status s = TEST_CompactMemTable();
+
+  // Compact every level
+  for (int level = 0; s.ok() && level < config::kNumLevels - 1; level++) {
+    TEST_CompactRange(level, nullptr, nullptr);
+    MutexLock l(&mutex_);
+    if (!bg_error_.ok()) {
+      s = bg_error_;
+    }
+  }
+
+  {
+    MutexLock l(&mutex_);
+    force_compaction_stats_ = nullptr;
+  }
+
+  // Print stats as required by the assignment
+  std::printf("Manual Full Compaction Statistics:\n");
+  std::printf("Number of compactions executed: %d\n", stats.num_compactions);
+  std::printf("Number of input files: %d\n", stats.num_input_files);
+  std::printf("Number of output files: %d\n", stats.num_output_files);
+  std::printf("Total bytes read during compaction: %lld\n",
+              (long long)stats.bytes_read);
+  std::printf("Total bytes written during compaction: %lld\n",
+              (long long)stats.bytes_written);
+
+  return s;
+}
+Status DBImpl::DeleteRange(const WriteOptions& options, const Slice& start_key,
+                           const Slice& end_key) {
+  WriteBatch batch;
   Iterator* it = NewIterator(ReadOptions());
 
   for (it->Seek(start_key); it->Valid(); it->Next()) {
     Slice key = it->key();
-
     if (key.compare(end_key) >= 0) break;
-    keys.push_back(key.ToString());
+    batch.Delete(key);
   }
+
+  Status s = it->status();
   delete it;
-  for (const auto& key : keys) {
-    Delete(options, Slice(key));
+  if (s.ok()) {
+    s = Write(options, &batch);
   }
-  return Status::OK();
+  return s;
 }
 Status DBImpl::Get(const ReadOptions& options, const Slice& key, std::string* value) {
   Status s;
