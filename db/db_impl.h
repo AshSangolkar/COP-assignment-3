@@ -43,6 +43,7 @@ class DBImpl : public DB {
   Status Get(const ReadOptions& options, const Slice& key,std::string* value) override;
   Status Scan(const ReadOptions& options, const Slice& start_key,const Slice& end_key, std::vector<std::pair<std::string, std::string>>* result) override;
   Status DeleteRange(const WriteOptions& options,const Slice& start_key, const Slice& end_key) override;
+  Status ForceFullCompaction() override;
   Iterator* NewIterator(const ReadOptions&) override;
   const Snapshot* GetSnapshot() override;
   void ReleaseSnapshot(const Snapshot* snapshot) override;
@@ -204,6 +205,17 @@ class DBImpl : public DB {
   Status bg_error_ GUARDED_BY(mutex_);
 
   CompactionStats stats_[config::kNumLevels] GUARDED_BY(mutex_);
+
+  struct ForceCompactionStats {
+    int num_compactions;
+    int num_input_files;
+    int num_output_files;
+    int64_t bytes_read;
+    int64_t bytes_written;
+
+    ForceCompactionStats() : num_compactions(0), num_input_files(0), num_output_files(0), bytes_read(0), bytes_written(0) {}
+  };
+  ForceCompactionStats* force_compaction_stats_ GUARDED_BY(mutex_);
 };
 
 // Sanitize db options.  The caller should delete result.info_log if

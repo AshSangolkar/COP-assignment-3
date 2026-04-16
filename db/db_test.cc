@@ -2181,6 +2181,14 @@ class ModelDB : public DB{
     }
   }
   void CompactRange(const Slice* start, const Slice* end) override {}
+  Status DeleteRange(const WriteOptions& options, const Slice& start, const Slice& end) override {
+    auto it = map_.lower_bound(start.ToString());
+    while (it != map_.end() && it->first < end.ToString()) {
+      it = map_.erase(it);
+    }
+    return Status::OK();
+  }
+  Status ForceFullCompaction() override { return Status::OK(); }
 
  private:
   class ModelIter : public Iterator {
@@ -2302,6 +2310,32 @@ static bool CompareIterators(int step, DB* model, DB* db,
   return ok;
 }
 
+static bool CompareScan(int step, DB* model, DB* db, const Slice& start, const Slice& end) {
+  ReadOptions options;
+  std::vector<std::pair<std::string, std::string>> model_results, db_results;
+  
+  Status s1 = model->Scan(options, start, end, &model_results);
+  Status s2 = db->Scan(options, start, end, &db_results);
+  
+  if (!s1.ok() || !s2.ok()) {
+    std::fprintf(stderr, "step %d: Scan status mismatch: %s vs %s\n", step, s1.ToString().c_str(), s2.ToString().c_str());
+    return false;
+  }
+  
+  if (model_results.size() != db_results.size()) {
+    std::fprintf(stderr, "step %d: Scan size mismatch: %zu vs %zu\n", step, model_results.size(), db_results.size());
+    return false;
+  }
+  
+  for (size_t i = 0; i < model_results.size(); i++) {
+    if (model_results[i].first != db_results[i].first || model_results[i].second != db_results[i].second) {
+      std::fprintf(stderr, "step %d: Scan result mismatch at index %zu\n", step, i);
+      return false;
+    }
+  }
+  return true;
+}
+
 TEST_F(DBTest, Randomized) {
   Random rnd(test::RandomSeed());
   do {
@@ -2316,19 +2350,19 @@ TEST_F(DBTest, Randomized) {
       }
       // TODO(sanjay): Test Get() works
       int p = rnd.Uniform(100);
-      if (p < 45) {  // Put
+      if (p < 40) {  // Put
         k = RandomKey(&rnd);
         v = RandomString(
             &rnd, rnd.OneIn(20) ? 100 + rnd.Uniform(100) : rnd.Uniform(8));
         ASSERT_LEVELDB_OK(model.Put(WriteOptions(), k, v));
         ASSERT_LEVELDB_OK(db_->Put(WriteOptions(), k, v));
 
-      } else if (p < 90) {  // Delete
+      } else if (p < 80) {  // Delete
         k = RandomKey(&rnd);
         ASSERT_LEVELDB_OK(model.Delete(WriteOptions(), k));
         ASSERT_LEVELDB_OK(db_->Delete(WriteOptions(), k));
 
-      } else {  // Multi-element batch
+      } else if (p < 90) {  // Multi-element batch
         WriteBatch b;
         const int num = rnd.Uniform(8);
         for (int i = 0; i < num; i++) {
@@ -2347,6 +2381,17 @@ TEST_F(DBTest, Randomized) {
         }
         ASSERT_LEVELDB_OK(model.Write(WriteOptions(), &b));
         ASSERT_LEVELDB_OK(db_->Write(WriteOptions(), &b));
+      } else if (p < 95) {  // DeleteRange
+        std::string start = RandomKey(&rnd);
+        std::string end = RandomKey(&rnd);
+        if (start > end) std::swap(start, end);
+        ASSERT_LEVELDB_OK(model.DeleteRange(WriteOptions(), start, end));
+        ASSERT_LEVELDB_OK(db_->DeleteRange(WriteOptions(), start, end));
+      } else {  // Scan
+        std::string start = RandomKey(&rnd);
+        std::string end = RandomKey(&rnd);
+        if (start > end) std::swap(start, end);
+        ASSERT_TRUE(CompareScan(step, &model, db_, start, end));
       }
 
       if ((step % 100) == 0) {

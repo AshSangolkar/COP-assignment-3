@@ -290,6 +290,11 @@ add_executable(leveldbutil
 )
 target_link_libraries(leveldbutil leveldb)
 
+add_executable(assignment3_test
+  "assignment3_test.cc"
+)
+target_link_libraries(assignment3_test leveldb)
+
 if(LEVELDB_BUILD_TESTS)
   enable_testing()
 
